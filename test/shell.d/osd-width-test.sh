@@ -2,6 +2,30 @@
 
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/base-test.sh"
+run_node_test <<'JS'
+const fs = require('fs')
+const qml = fs.readFileSync(path.join(root, 'shell/plugins/osd/Osd.qml'), 'utf8')
+const capExpression = /readonly property int maxMessageWidth: ([\s\S]*?)\n\n/.exec(qml)[1]
+const cap = new Function('root', 'Style', `return ${capExpression}`)
+const fixture = fs.readFileSync(path.join(root, 'test/shell.d/osd-width-test.sh'), 'utf8')
+const boundExpression = /check\((card.width <= [^\n]+), "long status respects ceiling or minimum"\)/.exec(fixture)[1]
+const withinBound = new Function('card', 'screenWidth', 'Style', 'osd', `return ${boundExpression}`)
+
+// Exercise the production cap and runtime assertion on outputs where the
+// minimum card width is larger than half the screen, without a compositor.
+for (const [screenWidth, scale] of [[400, 1], [1440, 1], [1440, 3]]) {
+  const Style = { space(px) { return Math.round(px * scale) } }
+  const state = { mediaOsd: false, screenWidth, messageChromeWidth: Math.round(80 * scale) }
+  const textWidth = cap(state, Style)
+  const card = { width: textWidth + state.messageChromeWidth }
+  assert(withinBound(card, screenWidth, Style, state),
+    `valid status card fits its ceiling or minimum at ${screenWidth}px and ${scale}x spacing`)
+  assert(!withinBound({ width: card.width + 5 }, screenWidth, Style, state),
+    `oversized status card fails at ${screenWidth}px and ${scale}x spacing`)
+  assert(textWidth >= Style.space(190), 'status retains its minimum text width')
+}
+JS
+
 require_compositor "OSD width runtime test"
 require_command quickshell
 
@@ -64,7 +88,7 @@ ShellRoot {
         capture("short", function() { show("volume", fixture.longText) })
       } else if (fixture.step === 1) {
         check(card.width > fixture.shortWidth, "long status expands")
-        check(card.width <= screenWidth / 2 + 1, "long status respects half-screen ceiling")
+        check(card.width <= Math.max(screenWidth / 2 + 1, Style.space(190) + osd.messageChromeWidth), "long status respects ceiling or minimum")
         check(osd.messageWidth < osd.message.length * Style.font.baseSize, "overlong status is bounded")
         capture("long-status", function() { show("media-play", fixture.longText) })
       } else if (fixture.step === 2) {
